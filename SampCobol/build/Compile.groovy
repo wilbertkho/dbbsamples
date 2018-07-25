@@ -1,6 +1,6 @@
-import com.ibm.team.dbb.repository.*
-import com.ibm.team.dbb.dependency.*
-import com.ibm.team.dbb.build.*
+import com.ibm.dbb.repository.*
+import com.ibm.dbb.dependency.*
+import com.ibm.dbb.build.*
 
 // receive passed arguments
 def file = args[0]
@@ -22,7 +22,7 @@ GroovyObject tools = (GroovyObject) groovyClass.newInstance()
 // define the BPXWDYN options for allocated temporary datasets
 def tempCreateOptions = "cyl space(5,5) unit(vio) blksize(80) lrecl(80) recfm(f,b) new"
 
-// copy program to PDS 
+// copy program to PDS
 println("Copying ${properties.sourceDir}/$file to $cobolPDS($member)")
 new CopyToPDS().file(new File("${properties.sourceDir}/$file")).dataset(cobolPDS).member(member).execute()
 
@@ -37,16 +37,16 @@ println("Compiling build file $file")
 def logicalFile = resolver.getLogicalFile()
 
 // create the appropriate parm list
-def parms = "LIB"
+def parms = "LIB,TEST"
 if (logicalFile.isCICS()) {
     parms = "$parms,DYNAM,CICS"
-} 
+}
 if (properties.errPrefix) {
     parms = "$parms,ADATA,EX(ADX(ELAXMGUX))"
-}   
+}
 
 // define the MVSExec command to compile the program
-def compile = new MVSExec().file(file).pgm("IGYCRCTL").parm(parms).attachx(true)
+def compile = new MVSExec().file(file).pgm("IGYCRCTL").parm(parms)
 
 // add DD statements to the MVSExec command
 compile.dd(new DDStatement().name("SYSIN").dsn("$cobolPDS($member)").options("shr").report(true))
@@ -90,7 +90,7 @@ if (logicalFile.isCICS()) {
     compile.dd(new DDStatement().dsn(properties.SDFHLOAD).options("shr"))
 }
 if (properties.SFELLOAD) {
-    compile.dd(new DDStatement().dsn(properties.SFELLOAD).options("shr"))  
+    compile.dd(new DDStatement().dsn(properties.SFELLOAD).options("shr"))
 }
 
 // add IDz User Build Error Feedback DDs
@@ -98,17 +98,9 @@ if (properties.errPrefix) {
     compile.dd(new DDStatement().name("SYSADATA").options("DUMMY"))
     compile.dd(new DDStatement().name("SYSXMLSD").dsn("${properties.hlq}.${properties.errPrefix}.SYSXMLSD.XML").options("mod keep"))
 }
-
-
-// add IDz User Build Error Feedback DDs
-if (properties.errPrefix) {
-    compile.dd(new DDStatement().name("SYSADATA").options("DUMMY"))
-    compile.dd(new DDStatement().name("SYSXMLSD").dsn("${properties.hlq}.${properties.errPrefix}.SYSXMLSD.XML").options("mod keep"))
-}
-
 
 // add a copy command to the MVSExec command to copy the SYSPRINT from the temporary dataset to an HFS log file
-compile.copy(new CopyToHFS().ddName("SYSPRINT").file(logFile).encoding(properties.logEncoding))
+compile.copy(new CopyToHFS().ddName("SYSPRINT").file(logFile).hfsEncoding(properties.logEncoding))
 
 // execute the MVSExec compile command
 def rc = compile.execute()

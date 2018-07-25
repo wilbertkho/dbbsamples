@@ -1,2 +1,1 @@
 SampCobol/cobol/igyivp.cbl
-SampCobol/link/igyivp.lnk

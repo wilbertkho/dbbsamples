@@ -1,21 +1,16 @@
-import com.ibm.team.dbb.build.*
-import com.ibm.team.dbb.build.report.*
-import com.ibm.team.dbb.build.html.*
-import com.ibm.team.dbb.repository.*
-import com.ibm.team.dbb.dependency.*
+import com.ibm.dbb.build.*
+import com.ibm.dbb.build.report.*
+import com.ibm.dbb.build.html.*
+import com.ibm.dbb.repository.*
+import com.ibm.dbb.dependency.*
+import groovy.transform.Field
 
-def parseArgs(String[] cliArgs) {
-	def cli = new CliBuilder(usage: 'build.groovy [options] buildfile')
-	cli.header = "buildFile:  Relative path (from sourceDir) of the file to build. " +
-				 "If file is *.txt then assumed to be buildlist file containing a list of relative path files to build. " +
-				 "Build list file can be absolute or relative (from sourceDir) path.\noptions:"
-	cli.footer = "All command line options can be provided in a properties file passed in using the -f, --propFile argument. " +
-		     "Use the argument long form name as the property name. Property file properties are used as default property " +
-		     "values and can be overridden by command line options" 
-	cli.s(longOpt:'sourceDir', args:1, argName:'dir', 'Absolute path to source directory') 
+def parseArgs(String[] cliArgs, String usage) {
+	def cli = new CliBuilder(usage: usage)
+	cli.s(longOpt:'sourceDir', args:1, argName:'dir', 'Absolute path to source directory')
 	cli.w(longOpt:'workDir', args:1, argName:'dir', 'Absolute path to the build output directory')
+	cli.b(longOpt:'buildHash', args:1, argName:'hash', 'Git commit hash for the build')
 	cli.q(longOpt:'hlq', args:1, argName:'hlq', 'High level qualifier for partition data sets')
-	cli.f(longOpt:'propFile', args:1, argName:'file', 'Absolute path to a default property file')
 	cli.c(longOpt:'collection', args:1, argName:'name', 'Name of the dependency data collection')
 	cli.t(longOpt:'team', args:1, argName:'hlq', 'Team build hlq for user build syslib concatenations')
 	cli.r(longOpt:'repo', args:1, argName:'url', 'DBB repository URL')
@@ -32,22 +27,23 @@ def parseArgs(String[] cliArgs) {
 	if (opts.h) { // if help option used, print usage and exit
 	 	cli.usage()
 		System.exit(0)
-	}                
+	}
 
-    return opts                          
+    return opts
 }
 
-def loadProperties(String[] cliArgs) {
-    def opts = parseArgs(cliArgs)    
+def loadProperties(OptionAccessor opts) {
+	// check to see if there is a ./build.properties to load
 	def properties = BuildProperties.getInstance()
-
-	// check to see if there is a default properties file to load first
-	if (opts.f)
-		properties.load(new File(opts.f))
+	def scriptDir = new File(getClass().protectionDomain.codeSource.location.path).parent
+	def buildPropFile = new File("$scriptDir/build.properties")
+	if (buildPropFile.exists())
+   		BuildProperties.load(buildPropFile)
 
 	// set command line arguments
 	if (opts.s) properties.sourceDir = opts.s
 	if (opts.w) properties.workDir = opts.w
+	if (opts.b) properties.buildHash = opts.b
 	if (opts.q) properties.hlq = opts.q
 	if (opts.c) properties.collection = opts.c
 	if (opts.t) properties.team = opts.t
@@ -73,46 +69,51 @@ def loadProperties(String[] cliArgs) {
 		System.exit(0)
 	}
 
-	// validate required properties
-	assert properties.sourceDir : "Missing property sourceDir - 'Absolute path to source directory'"
-	assert properties.workDir : "Missing property workDir - 'Absolute path to the build output directory'"
-	assert properties.hlq : "Missing property hlq - 'High level qualifier for partition data sets'"
-	if (!properties.userBuild) {  // if this is a team build then all repository arguments must be set
-	       assert properties.repo : "Missing property repo - 'DBB repository URL'"
-	       assert properties.id : "Missing property id - 'DBB repository id'"
-	       assert properties.collection : "Missing property collection - 'Name of the dependency data collection'"
-	       if (!(properties.pw || properties.pwFile)) {
-		       assert properties.pw : "Missing property pw - 'DBB password'"
-		       assert properties.pwFile : "Missing property pwFile - 'Absolute path to file containing DBB password'"
-	       }
-	}
-
-	// Set the buildFile or buildList property
-	if (opts.arguments()) {
-	       def buildFile = opts.arguments()[0]
-	       if (buildFile.endsWith(".txt")) {
-		      if (buildFile.startsWith("/"))
-				properties.buildListFile = buildFile
-		      else
-				properties.buildListFile = "$properties.sourceDir/$buildFile".toString()
-	       }
-	       else {
-		      properties.buildFile = buildFile
-	       }
-	}
-
-
 	// load datasets.properties containing system specific PDS names used by Mortgage Application build
 	properties.load(new File("$properties.sourceDir/SampCobol/build/datasets.properties"))
 	// load file.properties containing file specific properties like script mappings and CICS/DB2 content flags
-	properties.load(new File("$properties.sourceDir/SampCobol/build/file.properties"))    
+	properties.load(new File("$properties.sourceDir/SampCobol/build/file.properties"))
 
-	return properties                                 
+	println("** Build properties at startup:")
+	println(properties.list())
+
+	return properties
 }
 
-def getBuildList() {
+def validateRequiredProperties(List<String> props) {
+    def properties = BuildProperties.getInstance()
+    props.each { prop ->
+        // handle password special case i.e. can have either pw or pwFile
+    	if (prop.equals("password")) {
+    		 if (!(properties.pw || properties.pwFile)) {
+		     	assert properties.pw : "Missing property pw"
+		      	assert properties.pwFile : "Missing property pwFile"
+	       }
+    	}
+    	else {
+    		assert properties."$prop" : "Missing property $prop"
+    	}
+    }
+}
+
+
+def getBuildList(List<String> args) {
     def properties = BuildProperties.getInstance()
     def files = []
+
+	// Set the buildFile or buildList property
+	if (args) {
+		def buildFile = args[0]
+	    if (buildFile.endsWith(".txt")) {
+			if (buildFile.startsWith("/"))
+				properties.buildListFile = buildFile
+		      else
+				properties.buildListFile = "$properties.sourceDir/$buildFile".toString()
+	  	}
+	    else {
+			properties.buildFile = buildFile
+	    }
+	}
 
 	// check to see if a build file was passed in
 	if (properties.buildFile) {
@@ -120,23 +121,24 @@ def getBuildList() {
 		files = [properties.buildFile]
 	}
 	// else check to see if a build list file was passed in
-	else if (properties.buildListFile) { 
+	else if (properties.buildListFile) {
 		println("** Building files listed in $properties.buildListFile")
 	    files = new File(properties.buildListFile) as List<String>
-	}   
-	// build the entire Mortgage Application listed in files.txt   
-	else { 
+	}
+	// build the entire Mortgage Application listed in files.txt
+	else {
 	    println("** Building files listed in $properties.sourceDir/SampCobol/build/files.txt")
 	    files = new File("$properties.sourceDir/SampCobol/build/files.txt") as List<String>
 	}	
 	return files
 }
 
+// Added JCL type - Regi
 def createDatasets() {
     def properties = BuildProperties.getInstance()
-	def srcOptions = "cyl space(1,1) lrecl(80) dsorg(PO) recfm(F,B) dsntype(library) msg(1)"
-	def loadOptions = "cyl space(1,1) dsorg(PO) recfm(U) blksize(32760) dsntype(library) msg(1)" 
-	def srcDatasets = ["COBOL", "COPYBOOK", "OBJ", "BMS", "DBRM", "LINK", "MFS"]
+	def srcOptions = "cyl space(1,1) lrecl(80) dsorg(PO) recfm(F,B) dsntype(library) vol(USER05) msg(1)"
+	def loadOptions = "cyl space(1,1) dsorg(PO) recfm(U) blksize(32760) dsntype(library) vol(USER05) msg(1)"
+	def srcDatasets = ["COBOL", "COPYBOOK", "OBJ", "BMS", "DBRM", "LINK", "MFS", "JCL"]
 	def loadDatasets = ["LOAD", "TFORMAT"]
 
 	srcDatasets.each { dataset ->
@@ -148,7 +150,7 @@ def createDatasets() {
 	}
 	
 	if (properties.errPrefix) {
-	    def xmlOptions = "tracks space(200,40) dsorg(PS) blksize(27998) lrecl(16383) recfm(v,b) new"
+	    def xmlOptions = "tracks space(200,40) dsorg(PS) blksize(27998) lrecl(16383) recfm(v,b) new vol(USER05)"
     	new CreatePDS().dataset("${properties.hlq}.${properties.errPrefix}.SYSXMLSD.XML").options(xmlOptions).create()
 	}
 
@@ -175,10 +177,12 @@ def initializeBuildArtifacts() {
     def properties = BuildProperties.getInstance()
     if (!properties.userBuild) {
         def repo = getDefaultRepositoryClient()
-        properties.buildGroup = "${properties.collection}Build" as String
+        properties.buildGroup = "${properties.collection}" as String
         properties.buildLabel = "build.${properties.startTime}" as String
-        def buildResult = repo.createBuildResult(properties.buildGroup, properties.buildLabel) 
+        def buildResult = repo.createBuildResult(properties.buildGroup, properties.buildLabel)
         buildResult.setState(buildResult.PROCESSING)
+        if (properties.buildHash)
+            buildResult.setProperty("buildHash", properties.buildHash)
         buildResult.save()
         println("** Build result created at ${buildResult.getUrl()}")
     }
@@ -189,7 +193,7 @@ def getBuildResult() {
     def buildResult = null
     if (!properties.userBuild) {
         def repo = getDefaultRepositoryClient()
-        buildResult = repo.getBuildResult(properties.buildGroup, properties.buildLabel)           
+        buildResult = repo.getBuildResult(properties.buildGroup, properties.buildLabel)
     }
     return buildResult
 }
@@ -207,11 +211,11 @@ def generateBuildReport() {
 	// create build report html file
 	def htmlTemplate = null  // Use default HTML template.
 	def css = null       // Use default theme.
-	def renderScript = null  // Use default rendering.                       
+	def renderScript = null  // Use default rendering.
 	def transformer = HtmlTransformer.getInstance()
-	transformer.transform(jsonOutputFile, htmlTemplate, css, renderScript, htmlOutputFile, buildReportEncoding)   
+	transformer.transform(jsonOutputFile, htmlTemplate, css, renderScript, htmlOutputFile, buildReportEncoding)
 	
-	return [ jsonOutputFile, htmlOutputFile ]                      
+	return [ jsonOutputFile, htmlOutputFile ]
 }
 
 def getDefaultDependencyResolver(String file) {
@@ -227,6 +231,14 @@ def getDefaultDependencyResolver(String file) {
         resolver.setRepositoryClient(getDefaultRepositoryClient())
     }
     return resolver
+}
+
+def getDefaultImpactResolver(String file) {
+	def properties = BuildProperties.getInstance()
+   	def path = new DependencyPath().sourceDir(properties.sourceDir).directory("SampCobol/copybook")
+   	def rule = new ResolutionRule().library("SYSLIB").path(path)
+   	def resolver = new ImpactResolver().repositoryClient(getDefaultRepositoryClient()).collection(properties.collection).rule(rule).file(file)
+   	return resolver
 }
 
 def updateBuildResult(Map args) {
@@ -248,8 +260,8 @@ def updateBuildResult(Map args) {
 			if (args.log != null)
 				buildResult.addAttachment("${member}.log", new FileInputStream(args.log))
 		}
-		buildResult.save()   
-	}                                      
+		buildResult.save()
+	}
 }
 
 def finalizeBuildResult(Map args) {
@@ -260,11 +272,7 @@ def finalizeBuildResult(Map args) {
 		buildResult.setBuildReportData(new FileInputStream(args.jsonReport))
 		buildResult.setProperty("filesProcessed", String.valueOf(args.filesProcessed))
 		buildResult.setState(buildResult.COMPLETE)
-		buildResult.save() 
+		buildResult.save()
 	}
 }
-
-
-
-
 

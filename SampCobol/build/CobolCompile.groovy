@@ -1,6 +1,6 @@
-import com.ibm.team.dbb.repository.*
-import com.ibm.team.dbb.dependency.*
-import com.ibm.team.dbb.build.*
+import com.ibm.dbb.repository.*
+import com.ibm.dbb.dependency.*
+import com.ibm.dbb.build.*
 
 // receive passed arguments
 def file = args[0]
@@ -24,7 +24,7 @@ GroovyObject tools = (GroovyObject) groovyClass.newInstance()
 // define the BPXWDYN options for allocated temporary datasets
 def tempCreateOptions = "cyl space(5,5) unit(vio) blksize(80) lrecl(80) recfm(f,b) new"
 
-// copy program to PDS 
+// copy program to PDS
 println("Copying ${properties.sourceDir}/$file to $cobolPDS($member)")
 new CopyToPDS().file(new File("${properties.sourceDir}/$file")).dataset(cobolPDS).member(member).execute()
 
@@ -39,10 +39,10 @@ println("Compiling and link editing program $file")
 def logicalFile = resolver.getLogicalFile()
 
 // create the appropriate compile parm list
-def compileParms = "LIB"
+def compileParms = "LIB,TEST"
 if (logicalFile.isCICS()) {
     compileParms = "$compileParms,DYNAM,CICS"
-}   
+}
 if (logicalFile.isSQL()) {
     compileParms = "$compileParms,SQL"
 }
@@ -51,7 +51,7 @@ if (properties.errPrefix) {
 }
 
 // define the MVSExec command to compile the program
-def compile = new MVSExec().file(file).pgm("IGYCRCTL").parm(compileParms).attachx(true)
+def compile = new MVSExec().file(file).pgm("IGYCRCTL").parm(compileParms)
 
 // add DD statements to the compile command
 compile.dd(new DDStatement().name("SYSIN").dsn("$cobolPDS($member)").options("shr").report(true))
@@ -96,12 +96,12 @@ if (logicalFile.isSQL()) {
     compile.dd(new DDStatement().dsn(properties.SDSNLOAD).options("shr"))
 }
 if (properties.SFELLOAD) {
-    compile.dd(new DDStatement().dsn(properties.SFELLOAD).options("shr"))  
+    compile.dd(new DDStatement().dsn(properties.SFELLOAD).options("shr"))
 }
 
 // add optional DBRMLIB if build file contains DB2 code
 if (logicalFile.isSQL()) {
-    compile.dd(new DDStatement().name("DBRMLIB").dsn("$dbrmPDS($member)").options("shr"))
+    compile.dd(new DDStatement().name("DBRMLIB").dsn("$dbrmPDS($member)").options("shr").output(true).deployType("DBRM"))
 }	
 
 // add IDz User Build Error Feedback DDs
@@ -111,14 +111,14 @@ if (properties.errPrefix) {
 }
 
 // add a copy command to the compile command to copy the SYSPRINT from the temporary dataset to an HFS log file
-compile.copy(new CopyToHFS().ddName("SYSPRINT").file(logFile).encoding(properties.logEncoding))
+compile.copy(new CopyToHFS().ddName("SYSPRINT").file(logFile).hfsEncoding(properties.logEncoding))
 
 
 // define the MVSExec command to link edit the program
 def linkedit = new MVSExec().file(file).pgm("IEWBLINK").parm("MAP,RENT,COMPAT(PM5)")
-	                    
+	
 // add DD statements to the linkedit command
-linkedit.dd(new DDStatement().name("SYSLMOD").dsn("$loadPDS($member)").options("shr").output(true))
+linkedit.dd(new DDStatement().name("SYSLMOD").dsn("$loadPDS($member)").options("shr").output(true).deployType("LOAD"))
 linkedit.dd(new DDStatement().name("SYSPRINT").options(tempCreateOptions))
 linkedit.dd(new DDStatement().name("SYSUT1").options(tempCreateOptions))
 linkedit.dd(new DDStatement().name("SYSLIB").dsn(objectPDS).options("shr"))
@@ -128,7 +128,7 @@ if (logicalFile.isCICS()) {
 }
 
 // add a copy command to the linkedit command to append the SYSPRINT from the temporary dataset to the HFS log file
-linkedit.copy(new CopyToHFS().ddName("SYSPRINT").file(logFile).encoding(properties.logEncoding).append(true))
+linkedit.copy(new CopyToHFS().ddName("SYSPRINT").file(logFile).hfsEncoding(properties.logEncoding).append(true))
 
 
 // use MVSJob start and stop commands to handle passed DDs
@@ -141,6 +141,52 @@ tools.updateBuildResult(file:"$file", rc:rc, maxRC:4, log:logFile)
 if (rc <= 4) {
 	rc = linkedit.execute()
     tools.updateBuildResult(file:"$file", rc:rc, maxRC:0, log:logFile)
-}    
+}
+
+//  added by Regi - invoke rexx to do a DBRM BIND - March 15 2018
+// Add a conditional bind step
+    if (logicalFile.isSQL() && rc <= 0) {
+    // ** Variables that need to be configured **
+        def confDir = "/var/dbb/1.0.1/conf"
+// full bind    def rexxScript = "IBMUSER.GIT.ZMOBILE.REXX(BINDHC)"
+        def rexxScript = "IBMUSER.GIT.ZMOBILE.REXX(BINDHC2)"
+//*
+    // create the command script dataset
+        def cmdscp = "${properties.hlq}.ISPFGWY.EXEC"
+        def cmdscpOptions = "tracks space(1,1) lrecl(80) dsorg(PS) recfm(F,B) msg(1) new"
+        new CreatePDS().dataset(cmdscp).options(cmdscpOptions).execute()
+
+    // define the TSOExec command to execute the bind rexx script
+        def bindLogFile = new File("${properties.workDir}/${member}_bind.log")
+// ------------------------------------------------------------------------------
+ // was   def bind = new TSOExec().file(file).command("exec '$rexxScript'").options("'$member'")
+ //                           .confDir(confDir)
+ //                           .logFile(bindLogFile)
+ // was ->   bind.dd(new DDStatement().name("CMDSCP").dsn(cmdscp).options("shr"))
+// ------------------------------------------------------------------------------
+ //  added as bypass by Regi given by Dan -March 24
+ //* From Dan: in the beta the method is called TSOExec.toolkitDir.
+//* We changed the name in the GA because we really want the toolkit sub-directory called 'conf' i.e. the directory where runIspf.sh is.
+//* The conf directory contains files that may need to be modified and since SMPE usually installs into read only locations,
+//* customers may end up having the conf directory installed to another location.
+//*    def bind = new TSOExec().command("exec '$rexxScript'").options("'$member'")
+//*                            .toolkitDir(confDir)
+//*                            .logFile(bindLogFile)
+//*    bind.setFile(file)
+//*    bind.dd(new DDStatement().name("CMDSCP").dsn(cmdscp).options("shr"))
+// ------------------------------------------------------------------------------
+//* The GA version is below:
+//  added as bypass by Regi given by Dan -March 23
+    def bind = new TSOExec().command("exec '$rexxScript'").options("'$member'")
+                          .confDir(confDir)
+                          .logFile(bindLogFile)
+    bind.setFile(file)
+    bind.dd(new DDStatement().name("CMDSCP").dsn(cmdscp).options("shr"))
+// ------------------------------------------------------------------------------
+//      execute the bind rexx script and update the build result
+       rc = bind.execute()
+        tools.updateBuildResult(file:"$file", rc:rc, maxRC:0, log:bindLogFile)
+     }
+//      end of BIND invocation
 
 job.stop()
